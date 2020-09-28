@@ -13,7 +13,11 @@ namespace SitecoreDBBlobImageCompressor
             try
             {
                 var dryRun = false;
-                bool.TryParse(args[0], out dryRun);
+                if (args.Length > 0)
+                {
+                    bool.TryParse(args[0], out dryRun);
+                }
+
                 CompressBlobTable(dryRun);
             }
             catch (Exception ex)
@@ -34,10 +38,8 @@ namespace SitecoreDBBlobImageCompressor
 
         private static void CompressBlobTable(bool dryRun)
         {
-            if (dryRun)
-            {
-                Console.WriteLine("Dry Run Enabled");
-            }
+
+            Console.WriteLine($"Dry Run {dryRun}");
 
             using (var connection = GetConnectionToSitecoreMaster())
             {
@@ -50,9 +52,8 @@ namespace SitecoreDBBlobImageCompressor
                 using (var dataTable = new DataTable())
                 {
 
-                    SqlDataAdapter da = new SqlDataAdapter(command);
-                    da.SelectCommand.CommandTimeout = 3600;
-                    
+                    SqlDataAdapter da = new SqlDataAdapter(command) {SelectCommand = {CommandTimeout = 7200}};
+
                     var cmdBuilder = new SqlCommandBuilder(da);
 
                     var updateCommand = new SqlCommand(
@@ -61,7 +62,7 @@ namespace SitecoreDBBlobImageCompressor
                         connection);
 
                     da.UpdateCommand = updateCommand;
-                    da.UpdateCommand.CommandTimeout = 7200; // 60 mins
+                    da.UpdateCommand.CommandTimeout = 30000; // a long time
                     da.UpdateCommand.Parameters.Add("@Data",
                         SqlDbType.Image, 0, "Data");
 
@@ -78,9 +79,12 @@ namespace SitecoreDBBlobImageCompressor
                         {
                             count++;
                             var blobId = row["Id"].ToString();
-                            var img = (byte[]) row["Data"];
+                            var img = (byte[])row["Data"];
+                            var originalSize = img.Length;
 
                             Console.WriteLine($"Compressing BlobId: {blobId}");
+                            Console.WriteLine($"Original size: {originalSize}");
+
                             MemoryStream str = new MemoryStream();
                             str.Write(img, 0, img.Length);
                             try
@@ -88,7 +92,14 @@ namespace SitecoreDBBlobImageCompressor
                                 Bitmap bit = new Bitmap(str);
                                 var compressedBlob =
                                     CompressJpegImage(bit,
-                                        75); //75 seems to be the sweet spot
+                                        25); // Warning, this is very compressed.
+
+                                var compressedSize = compressedBlob.Length;
+
+                                double reduction = Math.Round(((originalSize - compressedSize) / (double)originalSize), 2) * 100;
+
+                                Console.WriteLine($"Compressed size: {compressedSize}");
+                                Console.WriteLine($"Compressed size: {reduction}%");
 
                                 if (compressedBlob == null)
                                 {
@@ -99,6 +110,7 @@ namespace SitecoreDBBlobImageCompressor
                                 if (!dryRun)
                                 {
                                     row["Data"] = compressedBlob;
+                                    Console.WriteLine($"Updated BlobId: {blobId}");
                                 }
                                 compressedCount++;
                             }
@@ -122,9 +134,9 @@ namespace SitecoreDBBlobImageCompressor
                     Console.WriteLine($"Rows skipped: {skippedCount}");
 
                     Console.WriteLine($"Updating data...");
-                    da.UpdateBatchSize = 0;
+                    da.UpdateBatchSize = 100;
                     da.Update(dataTable);
-                    
+
                 }
             }
         }
@@ -143,10 +155,11 @@ namespace SitecoreDBBlobImageCompressor
         {
             try
             {
-                var bmp = (Bitmap) image;
+                var bmp = (Bitmap)image;
                 using (var mozJpeg = new MozJpeg.MozJpeg())
                 {
                     var rawJpeg = mozJpeg.Encode(bmp, compressionPercentage);
+
                     return rawJpeg;
                     //return new MemoryStream(rawJpeg);
                 }
